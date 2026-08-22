@@ -104,7 +104,7 @@ jobs:
           $binding.AddSslCertificate($cert.Thumbprint, 'My')
           "SLEUTH_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - uses: Vampire/setup-wsl@v5
+      - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
           additional-packages: python3-pip python3-venv sshpass
