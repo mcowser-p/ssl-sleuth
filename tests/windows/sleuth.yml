@@ -19,4 +19,4 @@
           - ssl_sleuth_result.iis_bindings[0].thumbprint | length > 0
           - ssl_sleuth_result.locations | length >= 1
           - ssl_sleuth_result.locations | select('search', 'Cert..LocalMachine') | list | length > 0
-        fail_msg: "{{ ssl_sleuth_result }}"
+        fail_msg: "{{ ssl_sleuth_result | to_nice_json }}"
