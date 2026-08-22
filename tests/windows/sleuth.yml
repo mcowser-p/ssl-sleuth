@@ -1,0 +1,22 @@
+---
+- name: Windows SSL sleuth over both transports
+  hosts: windows
+  tasks:
+    - name: Inspect the IIS https endpoint and enumerate bindings
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 443
+        ssl_sleuth_sni: sleuth.local
+        ssl_sleuth_iis: true
+
+    - name: Assert the sleuth found everything
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.chain | length >= 1
+          - ssl_sleuth_result.iis_bindings | length >= 1
+          - ssl_sleuth_result.iis_bindings[0].thumbprint | length > 0
+          - ssl_sleuth_result.locations | length >= 1
+          - ssl_sleuth_result.locations | select('search', 'Cert..LocalMachine') | list | length > 0
+        fail_msg: "{{ ssl_sleuth_result }}"

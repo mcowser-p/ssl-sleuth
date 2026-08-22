@@ -1,0 +1,74 @@
+---
+- name: Converge
+  hosts: all
+  tasks:
+    - name: Scenario 1 — healthy endpoint, SAN match, locate on disk
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 4443
+        ssl_sleuth_sni: test.local
+
+    - name: Assert scenario 1 clean and located
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.chain | length == 2
+          - ssl_sleuth_result.warnings | length == 0
+          - ssl_sleuth_result.locations | length == 1
+          - "'sleuth-test.crt' in ssl_sleuth_result.locations[0]"
+        fail_msg: "scenario 1: {{ ssl_sleuth_result }}"
+
+    - name: Scenario 2 — expiring and chainless endpoint
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 4444
+        ssl_sleuth_locate: false
+
+    - name: Assert scenario 2 warnings
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.warnings | select('search', 'expires within') | list | length == 1
+          - ssl_sleuth_result.warnings | select('search', 'does not send the intermediate') | list | length == 1
+        fail_msg: "scenario 2: {{ ssl_sleuth_result.warnings }}"
+
+    - name: Scenario 3 — conversions
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_inspect: false
+        ssl_sleuth_locate: false
+        ssl_sleuth_convert:
+          - {action: pem_to_der, src: /opt/sleuth/leaf.crt, dest: /opt/sleuth/leaf.der}
+          - {action: der_to_pem, src: /opt/sleuth/leaf.der, dest: /opt/sleuth/leaf.rt.pem}
+          - {action: pem_to_pkcs12, src: /opt/sleuth/leaf.crt, key: /opt/sleuth/leaf.key,
+             chain: /opt/sleuth/ca.crt, dest: /opt/sleuth/leaf.p12, passphrase: molecule}
+          - {action: pkcs12_to_pem, src: /opt/sleuth/leaf.p12, dest: /opt/sleuth/leaf.p12.pem,
+             passphrase: molecule}
+          - {action: p7b_to_pem, src: /opt/sleuth/leaf.p7b, dest: /opt/sleuth/leaf.p7b.pem}
+          - {action: key_to_pkcs8, src: /opt/sleuth/leaf.key, dest: /opt/sleuth/leaf.pk8}
+          - {action: key_match, src: /opt/sleuth/leaf.crt, key: /opt/sleuth/leaf.key}
+          - {action: key_match, src: /opt/sleuth/leaf.crt, key: /opt/sleuth/soon.key}
+
+    - name: Round-trip fingerprints must be identical
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          a=$(openssl x509 -in /opt/sleuth/leaf.crt -noout -fingerprint)
+          for f in leaf.rt.pem leaf.p12.pem leaf.p7b.pem; do
+            b=$(openssl x509 -in /opt/sleuth/$f -noout -fingerprint)
+            [ "$a" = "$b" ] || { echo "MISMATCH $f"; exit 1; }
+          done
+          echo OK
+      changed_when: false
+
+    - name: Assert conversion outcomes
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.conversions | selectattr('action', 'eq', 'key_match')
+                                          | map(attribute='outcome') | list == ['MATCH', 'MISMATCH']
+          - ssl_sleuth_result.warnings | select('search', 'does NOT match key') | list | length == 1
+        fail_msg: "conversions: {{ ssl_sleuth_result.conversions }}"

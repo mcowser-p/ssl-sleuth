@@ -1,0 +1,12 @@
+---
+- name: Verify
+  hosts: all
+  tasks:
+    - name: Final reachability sanity
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 4443
+        ssl_sleuth_sni: test.local
+        ssl_sleuth_locate: false

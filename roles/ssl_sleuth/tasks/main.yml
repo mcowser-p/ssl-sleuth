@@ -1,0 +1,87 @@
+---
+- name: Initialize the result
+  ansible.builtin.set_fact:
+    ssl_sleuth_result:
+      endpoint: "{{ ssl_sleuth_host }}:{{ ssl_sleuth_port }}"
+      chain: []
+      warnings: []
+      locations: []
+      iis_bindings: []
+      conversions: []
+
+- name: Inspect the endpoint (linux)
+  ansible.builtin.include_tasks: inspect_linux.yml
+  when:
+    - ssl_sleuth_inspect
+    - ansible_os_family != 'Windows'
+
+- name: Inspect the endpoint (windows)
+  ansible.builtin.include_tasks: inspect_windows.yml
+  when:
+    - ssl_sleuth_inspect
+    - ansible_os_family == 'Windows'
+
+- name: Enumerate IIS bindings
+  ansible.builtin.include_tasks: iis.yml
+  when:
+    - ssl_sleuth_iis
+    - ansible_os_family == 'Windows'
+
+- name: Locate the certificate (linux)
+  ansible.builtin.include_tasks: locate_linux.yml
+  when:
+    - ssl_sleuth_locate
+    - ansible_os_family != 'Windows'
+    - ssl_sleuth_thumbprint | length > 0 or
+      (ssl_sleuth_result.chain | length > 0)
+
+- name: Locate the certificate (windows)
+  ansible.builtin.include_tasks: locate_windows.yml
+  when:
+    - ssl_sleuth_locate
+    - ansible_os_family == 'Windows'
+    - ssl_sleuth_thumbprint | length > 0 or
+      (ssl_sleuth_result.chain | length > 0)
+
+- name: Run conversions
+  ansible.builtin.include_tasks: convert.yml
+  loop: "{{ ssl_sleuth_convert }}"
+  loop_control:
+    loop_var: _ssl_sleuth_job
+    label: "{{ _ssl_sleuth_job.action | default('?') }}"
+
+- name: Report
+  ansible.builtin.debug:
+    msg: |-
+      ssl-sleuth report for {{ ssl_sleuth_result.endpoint }}:
+        chain: {{ ssl_sleuth_result.chain | length }} certificate(s)
+      {% for c in ssl_sleuth_result.chain %}
+        [{{ loop.index0 }}] {{ c.subject }}
+            issuer: {{ c.issuer }}
+            expires: {{ c.not_after }}  thumbprint: {{ c.thumbprint }}
+      {% endfor %}
+        locations: {{ ssl_sleuth_result.locations | default([]) }}
+      {% if ssl_sleuth_result.iis_bindings | length > 0 %}
+        iis bindings: {{ ssl_sleuth_result.iis_bindings }}
+      {% endif %}
+      {% if ssl_sleuth_result.warnings | length > 0 %}
+        WARNINGS:
+      {% for w in ssl_sleuth_result.warnings %}
+          - {{ w }}
+      {% endfor %}
+      {% else %}
+        no warnings
+      {% endif %}
+
+- name: Write the report file
+  when: ssl_sleuth_report_path | default('') | length > 0
+  ansible.builtin.copy:
+    content: "{{ ssl_sleuth_result | to_nice_yaml(indent=2) }}"
+    dest: "{{ ssl_sleuth_report_path }}"
+    mode: "0644"
+
+- name: Enforce the warning policy
+  ansible.builtin.assert:
+    that: not ssl_sleuth_expiry_fail or ssl_sleuth_result.warnings | length == 0
+    fail_msg: "ssl_sleuth_expiry_fail is set and there are warnings: {{ ssl_sleuth_result.warnings }}"
+    success_msg: ok

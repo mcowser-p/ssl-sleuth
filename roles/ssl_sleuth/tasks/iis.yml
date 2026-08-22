@@ -1,0 +1,43 @@
+---
+- name: Enumerate IIS https bindings and their certificates
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    Import-Module WebAdministration
+    $warnDays = {{ ssl_sleuth_expiry_warn_days }}
+    $out = @()
+    foreach ($site in Get-Website) {
+      foreach ($b in (Get-WebBinding -Name $site.Name | Where-Object protocol -eq 'https')) {
+        $thumb = $b.certificateHash
+        $store = if ($b.certificateStoreName) { $b.certificateStoreName } else { 'My' }
+        $cert = $null
+        if ($thumb) { $cert = Get-Item "Cert:\LocalMachine\$store\$thumb" -ErrorAction SilentlyContinue }
+        $out += [pscustomobject]@{
+          site = $site.Name
+          binding = $b.bindingInformation
+          store = "LocalMachine\$store"
+          thumbprint = "$thumb"
+          subject = if ($cert) { $cert.Subject } else { 'CERT NOT FOUND IN STORE' }
+          not_after = if ($cert) { $cert.NotAfter.ToString('o') } else { '' }
+          expiring = if ($cert) { $cert.NotAfter -lt (Get-Date).AddDays($warnDays) } else { $true }
+          expired = if ($cert) { $cert.NotAfter -lt (Get-Date) } else { $false }
+        }
+      }
+    }
+    ConvertTo-Json @($out) -Depth 4
+  register: _ssl_sleuth_iis_raw
+  changed_when: false
+
+- name: Record IIS bindings and warnings
+  vars:
+    _bindings_parsed: "{{ _ssl_sleuth_iis_raw.stdout | from_json }}"
+    _bindings: "{{ [_bindings_parsed] if _bindings_parsed is mapping else _bindings_parsed }}"
+    _warn: >-
+      {{ _bindings | selectattr('expiring')
+         | map(attribute='site')
+         | map('regex_replace', '^(.*)$', 'IIS site \1: certificate expiring/missing')
+         | list }}
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'iis_bindings': _bindings,
+                    'warnings': ssl_sleuth_result.warnings + _warn}) }}

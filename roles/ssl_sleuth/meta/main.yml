@@ -1,0 +1,33 @@
+---
+galaxy_info:
+  namespace: mcowser_p
+  role_name: ssl_sleuth
+  author: mcowser-p
+  description: >-
+    TLS certificate troubleshooting - probe endpoints, analyze chains,
+    warn on expiry, locate certs by thumbprint (filesystem, Windows
+    stores, IIS bindings), and run common format conversions
+  license: Apache-2.0
+  min_ansible_version: '2.16'
+
+  platforms:
+    - name: EL
+      versions:
+        - '9'
+        - '10'
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Windows
+      versions:
+        - '2022'
+
+  galaxy_tags:
+    - tls
+    - ssl
+    - certificates
+    - troubleshooting
+    - windows
+
+dependencies: []

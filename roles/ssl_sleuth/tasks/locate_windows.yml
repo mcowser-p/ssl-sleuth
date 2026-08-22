@@ -1,0 +1,46 @@
+---
+- name: Choose the thumbprint to hunt
+  ansible.builtin.set_fact:
+    _ssl_sleuth_want_thumb: >-
+      {{ (ssl_sleuth_thumbprint
+          if ssl_sleuth_thumbprint | length > 0
+          else ssl_sleuth_result.chain[0].thumbprint)
+         | replace(':', '') | upper }}
+
+- name: Search the certificate stores and extra directories
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'SilentlyContinue'
+    $want = '{{ _ssl_sleuth_want_thumb }}'
+    $hits = @()
+    foreach ($loc in 'LocalMachine', 'CurrentUser') {
+      foreach ($store in (Get-ChildItem "Cert:\$loc")) {
+        foreach ($c in (Get-ChildItem "Cert:\$loc\$($store.Name)")) {
+          if ($c.Thumbprint -eq $want) { $hits += "Cert:\$loc\$($store.Name)\$($c.Thumbprint)" }
+        }
+      }
+    }
+    $dirs = @({{ ssl_sleuth_windows_search_paths | map('regex_replace', '^(.*)$', "'\1'") | join(', ') }})
+    foreach ($d in $dirs) {
+      foreach ($f in (Get-ChildItem -Path $d -Recurse -Depth {{ ssl_sleuth_search_depth }} -Include *.cer, *.crt, *.pem -File)) {
+        try {
+          $c = New-Object Security.Cryptography.X509Certificates.X509Certificate2($f.FullName)
+          if ($c.Thumbprint -eq $want) { $hits += $f.FullName }
+        } catch {}
+      }
+    }
+    ConvertTo-Json @($hits)
+  register: _ssl_sleuth_store_scan
+  changed_when: false
+
+- name: Record matching locations
+  vars:
+    _hits_parsed: "{{ _ssl_sleuth_store_scan.stdout | from_json }}"
+    _hits: "{{ [_hits_parsed] if _hits_parsed is string else _hits_parsed }}"
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'locations': ssl_sleuth_result.locations + _hits,
+                    'warnings': ssl_sleuth_result.warnings
+                      + ([] if _hits | length > 0
+                         else ['thumbprint ' ~ _ssl_sleuth_want_thumb
+                               ~ ' not found in cert stores'])}) }}

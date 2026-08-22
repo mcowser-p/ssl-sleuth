@@ -1,0 +1,77 @@
+---
+- name: Prepare
+  hosts: all
+  tasks:
+    - name: Ensure openssl and python are present
+      ansible.builtin.package:
+        name: openssl
+        state: present
+
+    - name: Create the workshop
+      ansible.builtin.file:
+        path: /opt/sleuth
+        state: directory
+        mode: "0755"
+
+    - name: Generate CA, good leaf, and expiring chainless leaf
+      ansible.builtin.shell:
+        executable: /bin/bash
+        creates: /opt/sleuth/leaf.crt
+        cmd: |
+          set -e
+          cd /opt/sleuth
+          openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -keyout ca.key -out ca.crt -subj "/CN=sleuth-test-ca"
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout leaf.key -out leaf.csr -subj "/CN=test.local"
+          openssl x509 -req -in leaf.csr -CA ca.crt -CAkey ca.key \
+            -CAcreateserial -days 365 -out leaf.crt \
+            -extfile <(printf "subjectAltName=DNS:test.local,DNS:localhost")
+          cat leaf.crt ca.crt > fullchain.crt
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout soon.key -out soon.csr -subj "/CN=soon.local"
+          openssl x509 -req -in soon.csr -CA ca.crt -CAkey ca.key \
+            -CAcreateserial -days 2 -out soon.crt \
+            -extfile <(printf "subjectAltName=DNS:soon.local,DNS:localhost")
+          openssl crl2pkcs7 -nocrl -certfile leaf.crt -out leaf.p7b
+
+    - name: Install the TLS server script
+      ansible.builtin.copy:
+        dest: /opt/sleuth/server.py
+        mode: "0755"
+        content: |
+          #!/usr/bin/env python3
+          import http.server, ssl, sys
+          port, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+          httpd = http.server.HTTPServer(('127.0.0.1', port),
+                                         http.server.SimpleHTTPRequestHandler)
+          ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          ctx.load_cert_chain(cert, key)
+          httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+          httpd.serve_forever()
+
+    - name: Start the good server (full chain) on 4443
+      ansible.builtin.shell:
+        cmd: nohup python3 /opt/sleuth/server.py 4443 /opt/sleuth/fullchain.crt /opt/sleuth/leaf.key >/dev/null 2>&1 &
+        creates: /opt/sleuth/.s4443
+      changed_when: true
+
+    - name: Start the expiring chainless server on 4444
+      ansible.builtin.shell:
+        cmd: nohup python3 /opt/sleuth/server.py 4444 /opt/sleuth/soon.crt /opt/sleuth/soon.key >/dev/null 2>&1 &
+        creates: /opt/sleuth/.s4444
+      changed_when: true
+
+    - name: Wait for both servers
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        timeout: 20
+      loop: [4443, 4444]
+
+    - name: Drop the leaf into the distro certificate directory
+      ansible.builtin.copy:
+        remote_src: true
+        src: /opt/sleuth/leaf.crt
+        dest: "{{ '/etc/pki/tls/certs/sleuth-test.crt' if ansible_os_family == 'RedHat' else '/etc/ssl/certs/sleuth-test.crt' }}"
+        mode: "0644"

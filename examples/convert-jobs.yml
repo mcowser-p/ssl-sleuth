@@ -1,0 +1,14 @@
+---
+# Pass as ssl_sleuth_convert. The pem_to_pkcs12 job is the Tomcat
+# keystore rebuild the access-profiles TLS docs call for.
+ssl_sleuth_convert:
+  - action: pem_to_pkcs12
+    src: /etc/pki/tls/certs/myapp.crt
+    key: /etc/pki/tls/private/myapp.key
+    chain: /etc/pki/tls/certs/myapp-chain.crt
+    dest: /etc/tomcat/myapp.p12
+    passphrase: changeit
+
+  - action: key_match
+    src: /etc/pki/tls/certs/myapp.crt
+    key: /etc/pki/tls/private/myapp.key

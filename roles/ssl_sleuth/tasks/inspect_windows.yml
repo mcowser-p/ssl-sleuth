@@ -1,0 +1,89 @@
+---
+# Native .NET SslStream probe — no external tools, works for localhost.
+# Emits JSON; the same analysis fields as the linux path.
+
+- name: Probe the endpoint with SslStream
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $targetHost = '{{ ssl_sleuth_host }}'
+    $port = {{ ssl_sleuth_port }}
+    $sni = '{{ ssl_sleuth_sni }}'
+    if (-not $sni) { $sni = $targetHost }
+    $warnDays = {{ ssl_sleuth_expiry_warn_days }}
+    try {
+      $tcp = New-Object Net.Sockets.TcpClient($targetHost, $port)
+      $ssl = New-Object Net.Security.SslStream($tcp.GetStream(), $false, {$true})
+      $ssl.AuthenticateAsClient($sni)
+      $leaf = New-Object Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
+      $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+      $chain.ChainPolicy.RevocationMode = 'NoCheck'
+      $null = $chain.Build($leaf)
+      $out = @()
+      foreach ($el in $chain.ChainElements) {
+        $c = $el.Certificate
+        $sans = @()
+        foreach ($ext in $c.Extensions) {
+          if ($ext.Oid.Value -eq '2.5.29.17') {
+            $sans = ($ext.Format($false) -split ',\s*') | ForEach-Object { $_.Trim() }
+          }
+        }
+        $bits = 0
+        if ($c.PublicKey.Key) { $bits = $c.PublicKey.Key.KeySize }
+        $out += [pscustomobject]@{
+          subject = $c.Subject; issuer = $c.Issuer
+          serial = $c.SerialNumber
+          not_before = $c.NotBefore.ToString('o'); not_after = $c.NotAfter.ToString('o')
+          thumbprint = $c.Thumbprint
+          sha256 = ((Get-FileHash -InputStream ([IO.MemoryStream]::new($c.RawData)) -Algorithm SHA256).Hash)
+          signature_algorithm = $c.SignatureAlgorithm.FriendlyName
+          key_algorithm = $c.PublicKey.Oid.FriendlyName
+          key_bits = $bits
+          sans = $sans
+          expiring = ($c.NotAfter -lt (Get-Date).AddDays($warnDays))
+          expired = ($c.NotAfter -lt (Get-Date))
+        }
+      }
+      $ssl.Dispose(); $tcp.Dispose()
+      @{ok = $true; chain = $out} | ConvertTo-Json -Depth 6
+    } catch {
+      @{ok = $false; error = $_.Exception.Message} | ConvertTo-Json
+    }
+  register: _ssl_sleuth_probe_win
+  changed_when: false
+
+- name: Fail helpfully when the endpoint is unreachable
+  vars:
+    _parsed: "{{ _ssl_sleuth_probe_win.stdout | from_json }}"
+  ansible.builtin.fail:
+    msg: >-
+      could not establish a TLS connection to
+      {{ ssl_sleuth_host }}:{{ ssl_sleuth_port }} — {{ _parsed.error | default('unknown') }}
+  when: not (_ssl_sleuth_probe_win.stdout | from_json).ok
+
+- name: Analyze the chain
+  vars:
+    _parsed: "{{ _ssl_sleuth_probe_win.stdout | from_json }}"
+    _chain_raw: "{{ [_parsed.chain] if _parsed.chain is mapping else _parsed.chain }}"
+    _leaf: "{{ _chain_raw[0] | default({}) }}"
+    _want: "{{ ssl_sleuth_sni if ssl_sleuth_sni | length > 0 else ssl_sleuth_host }}"
+    _wildcard: "{{ '*.' ~ (_want.split('.')[1:] | join('.')) }}"
+    _san_names: >-
+      {{ _leaf.sans | default([])
+         | map('regex_replace', '^(DNS Name|IP Address|DNS)[=:]', '') | map('trim') | list }}
+    _warn: >-
+      {{ ([] if _leaf == {} else
+          (['leaf certificate EXPIRED ' ~ _leaf.not_after] if _leaf.expired else
+           (['leaf certificate expires within ' ~ ssl_sleuth_expiry_warn_days
+             ~ ' days (' ~ _leaf.not_after ~ ')'] if _leaf.expiring else []))
+          + ([] if _want == 'localhost' or _want is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+             else [] if (_want in _san_names or _wildcard in _san_names)
+             else ['hostname ' ~ _want ~ ' not covered by SANs ' ~ (_san_names | string)])
+          + (['weak signature algorithm: ' ~ _leaf.signature_algorithm]
+             if 'sha1' in _leaf.signature_algorithm | lower else [])
+          + (['weak key: ' ~ _leaf.key_algorithm ~ ' ' ~ _leaf.key_bits ~ ' bits']
+             if 'rsa' in _leaf.key_algorithm | lower and _leaf.key_bits | int < 2048 else [])) }}
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'chain': _chain_raw,
+                    'warnings': ssl_sleuth_result.warnings + _warn}) }}

@@ -1,0 +1,47 @@
+---
+# defaults for mcowser_p.ssl_sleuth.ssl_sleuth
+# All variables carry the ssl_sleuth_ prefix (Galaxy var-naming standard).
+# The role never escalates and never reads private-key directories; the
+# only operation that touches a key is the explicit key_match/pkcs12
+# conversion job, where the caller supplies the path (and privileges).
+
+# --- What to run -----------------------------------------------------------
+ssl_sleuth_inspect: true      # probe an endpoint and analyze the served chain
+ssl_sleuth_locate: true       # find the inspected (or given) thumbprint locally
+ssl_sleuth_iis: false         # Windows only: enumerate IIS https bindings
+ssl_sleuth_convert: []        # list of conversion jobs (see below)
+
+# --- Inspect ---------------------------------------------------------------
+ssl_sleuth_host: localhost    # IP address, DNS name, or localhost
+ssl_sleuth_port: 443
+ssl_sleuth_sni: ""            # servername to present when host is an IP
+
+# Warn when the leaf certificate expires within this many days…
+ssl_sleuth_expiry_warn_days: 14
+# …and optionally make that (or any warning) a hard failure.
+ssl_sleuth_expiry_fail: false
+
+# --- Locate ----------------------------------------------------------------
+# SHA1 thumbprint to search for (no colons, any case). Empty = whatever the
+# inspect phase just collected from the endpoint.
+ssl_sleuth_thumbprint: ""
+# Linux search paths — the canonical cert locations from the
+# declarative-access-profiles TLS docs. Private-key dirs are deliberately
+# NOT searched.
+ssl_sleuth_search_paths:
+  - /etc/pki/tls/certs
+  - /etc/ssl/certs
+  - /etc/pki/ca-trust/source/anchors
+  - /usr/local/share/ca-certificates
+# Windows: extra filesystem directories to scan besides the cert stores.
+ssl_sleuth_windows_search_paths: []
+ssl_sleuth_search_depth: 3
+
+# --- Convert ---------------------------------------------------------------
+# Each job: {action, src, key, chain, dest, passphrase}
+#   pem_to_pkcs12  src(cert) + key [+ chain] [+ passphrase] -> dest(.pfx/.p12)
+#   pkcs12_to_pem  src(.pfx) [+ passphrase] -> dest(.pem cert+chain+key)
+#   pem_to_der     src -> dest        der_to_pem     src -> dest
+#   p7b_to_pem     src(.p7b) -> dest
+#   key_to_pkcs8   src(key) -> dest
+#   key_match      src(cert) + key -> result recorded (no dest)

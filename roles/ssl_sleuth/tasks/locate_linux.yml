@@ -1,0 +1,48 @@
+---
+# Fingerprint every certificate file under the search paths and report
+# where the wanted thumbprint lives. Private-key directories are never
+# searched (and the file globs would not match keys anyway).
+
+- name: Choose the thumbprint to hunt
+  ansible.builtin.set_fact:
+    _ssl_sleuth_want_thumb: >-
+      {{ (ssl_sleuth_thumbprint
+          if ssl_sleuth_thumbprint | length > 0
+          else ssl_sleuth_result.chain[0].thumbprint)
+         | replace(':', '') | upper }}
+
+- name: Fingerprint candidate files
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      while IFS= read -r f; do
+        fp=$(openssl x509 -in "$f" -noout -fingerprint -sha1 2>/dev/null \
+             || openssl x509 -inform der -in "$f" -noout -fingerprint -sha1 2>/dev/null) || continue
+        echo "${fp#*=}|$f"
+      done < <(find {{ ssl_sleuth_search_paths | map('quote') | join(' ') }} \
+                 -maxdepth {{ ssl_sleuth_search_depth }} -type f \
+                 \( -name '*.pem' -o -name '*.crt' -o -name '*.cer' -o -name '*.der' \) \
+                 2>/dev/null)
+      true
+  register: _ssl_sleuth_scan
+  changed_when: false
+
+- name: Record matching locations
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'locations': ssl_sleuth_result.locations + [item.split('|', 1)[1]]}) }}
+  when: (item.split('|', 1)[0] | replace(':', '') | upper) == _ssl_sleuth_want_thumb
+  loop: "{{ _ssl_sleuth_scan.stdout_lines | select('search', '\\|') | list }}"
+  loop_control:
+    label: "{{ item.split('|', 1)[1] | default(item) }}"
+
+- name: Warn when the certificate is nowhere on disk
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'warnings': ssl_sleuth_result.warnings
+              + ['thumbprint ' ~ _ssl_sleuth_want_thumb
+                 ~ ' not found under: ' ~ (ssl_sleuth_search_paths | join(', '))]}) }}
+  when: ssl_sleuth_result.locations | length == 0

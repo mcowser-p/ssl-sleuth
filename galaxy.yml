@@ -1,0 +1,47 @@
+---
+# Ansible Galaxy collection manifest for mcowser_p.ssl_sleuth.
+#
+# `version` is a placeholder — semantic-release stamps the released version
+# here at release time (see .releaserc.js) before building the collection
+# artifact. Do not bump it by hand.
+namespace: mcowser_p
+name: ssl_sleuth
+version: 0.0.0
+readme: README.md
+authors:
+  - mcowser-p
+description: >-
+  ssl-sleuth — TLS certificate troubleshooting for Linux and Windows.
+  Probe any endpoint (IP, DNS, or localhost) on any port and collect the
+  full served chain; flag expiry inside a configurable window, missing
+  intermediates, SAN/hostname mismatches, and weak crypto; locate the
+  certificate on the local filesystem or Windows cert stores by
+  thumbprint (including IIS site bindings); and run the common format
+  conversions (PEM/DER/PKCS12/P7B, key formats, cert/key match).
+license:
+  - Apache-2.0
+tags:
+  - tls
+  - ssl
+  - certificates
+  - troubleshooting
+  - windows
+  - linux
+  - security
+dependencies:
+  ansible.windows: '>=2.0.0'
+repository: https://github.com/mcowser-p/ssl-sleuth
+homepage: https://github.com/mcowser-p/ssl-sleuth
+issues: https://github.com/mcowser-p/ssl-sleuth/issues
+build_ignore:
+  - .github
+  - .git
+  - .gitignore
+  - .releaserc.js
+  - .ansible-lint
+  - .yamllint
+  - package.json
+  - package-lock.json
+  - node_modules
+  - requirements.txt
+  - '*.tar.gz'

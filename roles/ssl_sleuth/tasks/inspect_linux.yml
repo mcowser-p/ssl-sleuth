@@ -1,0 +1,119 @@
+---
+# Probe with openssl (universally present), emit one parseable block per
+# served certificate, and analyze the chain in Jinja.
+
+- name: Probe the endpoint with openssl
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      host='{{ ssl_sleuth_host }}'
+      port='{{ ssl_sleuth_port }}'
+      sni='{{ ssl_sleuth_sni }}'
+      warn_secs='{{ ssl_sleuth_expiry_warn_days | int * 86400 }}'
+      raw=$(echo | openssl s_client -connect "${host}:${port}" \
+        ${sni:+-servername "$sni"} -showcerts 2>/dev/null) || {
+          echo "CONNECT_FAILED"; exit 0; }
+      tmpd=$(mktemp -d)
+      trap 'rm -rf "$tmpd"' EXIT
+      echo "$raw" | awk -v d="$tmpd" '
+        /-----BEGIN CERTIFICATE-----/ {n++; f=d"/c"n".pem"}
+        f {print > f}
+        /-----END CERTIFICATE-----/ {f=""}'
+      for f in "$tmpd"/c*.pem; do
+        [ -e "$f" ] || continue
+        echo "-----CERT-----"
+        openssl x509 -in "$f" -noout -subject -issuer -serial -startdate -enddate
+        echo "sha1=$(openssl x509 -in "$f" -noout -fingerprint -sha1 | cut -d= -f2)"
+        echo "sha256=$(openssl x509 -in "$f" -noout -fingerprint -sha256 | cut -d= -f2)"
+        echo "sig=$(openssl x509 -in "$f" -noout -text | awk '/Signature Algorithm/{print $3; exit}')"
+        echo "keyalg=$(openssl x509 -in "$f" -noout -text | awk -F': ' '/Public Key Algorithm/{print $2; exit}')"
+        echo "bits=$(openssl x509 -in "$f" -noout -text | grep -m1 -oE 'Public-Key: \([0-9]+' | grep -oE '[0-9]+')"
+        echo "sans=$(openssl x509 -in "$f" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ' | tr '\n' ',')"
+        if openssl x509 -in "$f" -noout -checkend "$warn_secs" >/dev/null; then
+          echo "expiring=0"
+        else
+          echo "expiring=1"
+        fi
+        if openssl x509 -in "$f" -noout -checkend 0 >/dev/null; then
+          echo "expired=0"
+        else
+          echo "expired=1"
+        fi
+      done
+  register: _ssl_sleuth_probe
+  changed_when: false
+
+- name: Fail helpfully when the endpoint is unreachable
+  ansible.builtin.fail:
+    msg: >-
+      could not establish a TLS connection to
+      {{ ssl_sleuth_host }}:{{ ssl_sleuth_port }}
+      {{ '(sni ' ~ ssl_sleuth_sni ~ ')' if ssl_sleuth_sni | length > 0 else '' }}
+  when: "'CONNECT_FAILED' in _ssl_sleuth_probe.stdout"
+
+- name: Reset the chain
+  ansible.builtin.set_fact:
+    _ssl_sleuth_chain: []
+
+- name: Parse the served chain
+  ansible.builtin.set_fact:
+    _ssl_sleuth_chain: >-
+      {{ _ssl_sleuth_chain + [{
+           'subject': _f_subject, 'issuer': _f_issuer, 'serial': _f_serial,
+           'not_before': _f_nb, 'not_after': _f_na,
+           'thumbprint': _f_sha1 | replace(':', '') | upper,
+           'sha256': _f_sha256 | replace(':', '') | upper,
+           'signature_algorithm': _f_sig, 'key_algorithm': _f_keyalg,
+           'key_bits': _f_bits | int,
+           'sans': _f_sans | split(',') | map('trim') | select | list,
+           'expiring': _f_expiring == '1', 'expired': _f_expired == '1'}] }}
+  vars:
+    _f_subject: "{{ (_ssl_sleuth_block | regex_search('subject=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_issuer: "{{ (_ssl_sleuth_block | regex_search('issuer=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_serial: "{{ (_ssl_sleuth_block | regex_search('serial=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_nb: "{{ (_ssl_sleuth_block | regex_search('notBefore=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_na: "{{ (_ssl_sleuth_block | regex_search('notAfter=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_sha1: "{{ (_ssl_sleuth_block | regex_search('sha1=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_sha256: "{{ (_ssl_sleuth_block | regex_search('sha256=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_sig: "{{ (_ssl_sleuth_block | regex_search('sig=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_keyalg: "{{ (_ssl_sleuth_block | regex_search('keyalg=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_bits: "{{ (_ssl_sleuth_block | regex_search('bits=(.*)', '\\1') or ['0']) | first | trim or 0 }}"
+    _f_sans: "{{ (_ssl_sleuth_block | regex_search('sans=(.*)', '\\1') or ['']) | first | trim }}"
+    _f_expiring: "{{ (_ssl_sleuth_block | regex_search('expiring=(.*)', '\\1') or ['0']) | first | trim }}"
+    _f_expired: "{{ (_ssl_sleuth_block | regex_search('expired=(.*)', '\\1') or ['0']) | first | trim }}"
+  loop: "{{ _ssl_sleuth_probe.stdout.split('-----CERT-----') | map('trim') | select | list }}"
+  loop_control:
+    loop_var: _ssl_sleuth_block
+    label: cert
+
+- name: Analyze the chain
+  vars:
+    _leaf: "{{ _ssl_sleuth_chain[0] | default({}) }}"
+    _want: "{{ ssl_sleuth_sni if ssl_sleuth_sni | length > 0 else ssl_sleuth_host }}"
+    _wildcard: "{{ '*.' ~ (_want.split('.')[1:] | join('.')) }}"
+    _san_names: >-
+      {{ _leaf.sans | default([])
+         | map('regex_replace', '^(DNS|IPAddress|IP):', '') | list }}
+    _issuers_present: >-
+      {{ _ssl_sleuth_chain[1:] | map(attribute='subject') | list }}
+    _warn: >-
+      {{ ([] if _leaf == {} else
+          (['leaf certificate EXPIRED ' ~ _leaf.not_after] if _leaf.expired else
+           (['leaf certificate expires within ' ~ ssl_sleuth_expiry_warn_days
+             ~ ' days (' ~ _leaf.not_after ~ ')'] if _leaf.expiring else []))
+          + ([] if _want == 'localhost' or _want is match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+             else [] if (_want in _san_names or _wildcard in _san_names)
+             else ['hostname ' ~ _want ~ ' not covered by SANs ' ~ (_san_names | string)])
+          + ([] if _leaf.subject == _leaf.issuer
+                 or _leaf.issuer in _issuers_present
+             else ['server does not send the intermediate for issuer: ' ~ _leaf.issuer])
+          + (['weak signature algorithm: ' ~ _leaf.signature_algorithm]
+             if 'sha1' in _leaf.signature_algorithm | lower else [])
+          + (['weak key: ' ~ _leaf.key_algorithm ~ ' ' ~ _leaf.key_bits ~ ' bits']
+             if 'rsa' in _leaf.key_algorithm | lower and _leaf.key_bits < 2048 else [])) }}
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'chain': _ssl_sleuth_chain,
+                    'warnings': ssl_sleuth_result.warnings + _warn}) }}

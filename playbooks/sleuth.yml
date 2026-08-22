@@ -1,0 +1,13 @@
+---
+# ansible-playbook -i inventory mcowser_p.ssl_sleuth.sleuth \
+#   -e host=api.example.com -e port=443
+- name: SSL sleuth
+  hosts: all
+  roles:
+    - role: mcowser_p.ssl_sleuth.ssl_sleuth
+      vars:
+        ssl_sleuth_host: "{{ host | default('localhost') }}"
+        ssl_sleuth_port: "{{ port | default(443) }}"
+        ssl_sleuth_sni: "{{ sni | default('') }}"
+        ssl_sleuth_iis: "{{ iis | default(false) }}"
+        ssl_sleuth_expiry_warn_days: "{{ warn_days | default(14) }}"

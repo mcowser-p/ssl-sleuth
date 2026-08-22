@@ -1,0 +1,108 @@
+---
+# One conversion job (loop_var _ssl_sleuth_job). Linux/controller only —
+# uses the openssl CLI so every command here is quotable in docs.
+
+- name: Validate the job
+  ansible.builtin.assert:
+    that:
+      - _ssl_sleuth_job.action | default('') in
+        ['pem_to_pkcs12', 'pkcs12_to_pem', 'pem_to_der', 'der_to_pem',
+         'p7b_to_pem', 'key_to_pkcs8', 'key_match']
+      - _ssl_sleuth_job.src | default('') | length > 0
+      - ansible_os_family != 'Windows'
+    fail_msg: >-
+      conversion jobs need action+src and run on Linux (or the
+      controller) — Windows hosts should run conversions via a Linux
+      play or localhost.
+
+- name: Convert pem to pkcs12
+  when: _ssl_sleuth_job.action == 'pem_to_pkcs12'
+  ansible.builtin.command:
+    argv: >-
+      {{ ['openssl', 'pkcs12', '-export',
+          '-in', _ssl_sleuth_job.src,
+          '-inkey', _ssl_sleuth_job.key,
+          '-out', _ssl_sleuth_job.dest,
+          '-passout', 'pass:' ~ (_ssl_sleuth_job.passphrase | default(''))]
+         + (['-certfile', _ssl_sleuth_job.chain] if _ssl_sleuth_job.chain is defined else []) }}
+    creates: "{{ _ssl_sleuth_job.dest }}"
+  no_log: "{{ _ssl_sleuth_job.passphrase is defined }}"
+
+- name: Convert pkcs12 to pem
+  when: _ssl_sleuth_job.action == 'pkcs12_to_pem'
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - pkcs12
+      - -in
+      - "{{ _ssl_sleuth_job.src }}"
+      - -out
+      - "{{ _ssl_sleuth_job.dest }}"
+      - -nodes
+      - -passin
+      - "pass:{{ _ssl_sleuth_job.passphrase | default('') }}"
+    creates: "{{ _ssl_sleuth_job.dest }}"
+  no_log: "{{ _ssl_sleuth_job.passphrase is defined }}"
+
+- name: Convert pem to der
+  when: _ssl_sleuth_job.action == 'pem_to_der'
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, "{{ _ssl_sleuth_job.src }}", -outform, der,
+           -out, "{{ _ssl_sleuth_job.dest }}"]
+    creates: "{{ _ssl_sleuth_job.dest }}"
+
+- name: Convert der to pem
+  when: _ssl_sleuth_job.action == 'der_to_pem'
+  ansible.builtin.command:
+    argv: [openssl, x509, -inform, der, -in, "{{ _ssl_sleuth_job.src }}",
+           -out, "{{ _ssl_sleuth_job.dest }}"]
+    creates: "{{ _ssl_sleuth_job.dest }}"
+
+- name: Convert p7b to pem
+  when: _ssl_sleuth_job.action == 'p7b_to_pem'
+  ansible.builtin.command:
+    argv: [openssl, pkcs7, -print_certs, -in, "{{ _ssl_sleuth_job.src }}",
+           -out, "{{ _ssl_sleuth_job.dest }}"]
+    creates: "{{ _ssl_sleuth_job.dest }}"
+
+- name: Convert key to pkcs8
+  when: _ssl_sleuth_job.action == 'key_to_pkcs8'
+  ansible.builtin.command:
+    argv: [openssl, pkey, -in, "{{ _ssl_sleuth_job.src }}",
+           -out, "{{ _ssl_sleuth_job.dest }}"]
+    creates: "{{ _ssl_sleuth_job.dest }}"
+
+- name: Compare cert and key public keys
+  when: _ssl_sleuth_job.action == 'key_match'
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      a=$(openssl x509 -in {{ _ssl_sleuth_job.src | quote }} -noout -pubkey | sha256sum)
+      b=$(openssl pkey -in {{ _ssl_sleuth_job.key | quote }} -pubout 2>/dev/null | sha256sum)
+      [ "$a" = "$b" ] && echo MATCH || echo MISMATCH
+  register: _ssl_sleuth_keymatch
+  changed_when: false
+
+- name: Record the conversion outcome
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'conversions': ssl_sleuth_result.conversions
+              + [{'action': _ssl_sleuth_job.action,
+                  'src': _ssl_sleuth_job.src,
+                  'dest': _ssl_sleuth_job.dest | default(''),
+                  'outcome': (_ssl_sleuth_keymatch.stdout | trim)
+                             if _ssl_sleuth_job.action == 'key_match'
+                             else 'done'}]}) }}
+
+- name: A key mismatch is a warning
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'warnings': ssl_sleuth_result.warnings
+              + ['cert ' ~ _ssl_sleuth_job.src ~ ' does NOT match key '
+                 ~ _ssl_sleuth_job.key]}) }}
+  when:
+    - _ssl_sleuth_job.action == 'key_match'
+    - (_ssl_sleuth_keymatch.stdout | trim) == 'MISMATCH'
