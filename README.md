@@ -45,6 +45,13 @@ https binding, joins it to its store certificate, and applies the same
 expiry warnings. WinRM and OpenSSH connections both work (both tested in
 CI).
 
+## The onboarding sibling
+
+ssl-sleuth diagnoses; its sibling
+[`mcowser_p.acme_please`](https://github.com/mcowser-p/acme-please)
+*provisions* — ACME client onboarding, enterprise-EAB registration, and
+renewals that deploy into the same canonical paths this role searches.
+
 ## Conversions
 
 `ssl_sleuth_convert` runs the classic openssl incantations so nobody has
