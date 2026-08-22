@@ -43,6 +43,10 @@
       done
   register: _ssl_sleuth_probe
   changed_when: false
+  retries: 3
+  delay: 2
+  until: "'CONNECT_FAILED' not in _ssl_sleuth_probe.stdout"
+  failed_when: false
 
 - name: Fail helpfully when the endpoint is unreachable
   ansible.builtin.fail:

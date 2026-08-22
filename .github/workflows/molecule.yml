@@ -94,7 +94,7 @@ jobs:
           New-NetFirewallRule -DisplayName "SSH-WSL" -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow | Out-Null
 
       - name: Install IIS with a self-signed https binding
-        shell: pwsh
+        shell: powershell   # 5.1 — WebAdministration objects are live there, not deserialized
         run: |
           Install-WindowsFeature Web-Server | Out-Null
           Import-Module WebAdministration

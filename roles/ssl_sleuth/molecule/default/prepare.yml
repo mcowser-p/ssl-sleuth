@@ -43,22 +43,31 @@
           #!/usr/bin/env python3
           import http.server, ssl, sys
           port, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-          httpd = http.server.HTTPServer(('127.0.0.1', port),
-                                         http.server.SimpleHTTPRequestHandler)
+
+          class Quiet(http.server.HTTPServer):
+              def handle_error(self, request, client_address):
+                  pass
+
+          httpd = Quiet(('127.0.0.1', port),
+                        http.server.SimpleHTTPRequestHandler)
           ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
           ctx.load_cert_chain(cert, key)
           httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-          httpd.serve_forever()
+          while True:
+              try:
+                  httpd.serve_forever()
+              except Exception:
+                  continue
 
     - name: Start the good server (full chain) on 4443
       ansible.builtin.shell:
-        cmd: nohup python3 /opt/sleuth/server.py 4443 /opt/sleuth/fullchain.crt /opt/sleuth/leaf.key >/dev/null 2>&1 &
+        cmd: nohup python3 /opt/sleuth/server.py 4443 /opt/sleuth/fullchain.crt /opt/sleuth/leaf.key >/dev/null 2>&1 & touch /opt/sleuth/.s4443
         creates: /opt/sleuth/.s4443
       changed_when: true
 
     - name: Start the expiring chainless server on 4444
       ansible.builtin.shell:
-        cmd: nohup python3 /opt/sleuth/server.py 4444 /opt/sleuth/soon.crt /opt/sleuth/soon.key >/dev/null 2>&1 &
+        cmd: nohup python3 /opt/sleuth/server.py 4444 /opt/sleuth/soon.crt /opt/sleuth/soon.key >/dev/null 2>&1 & touch /opt/sleuth/.s4444
         creates: /opt/sleuth/.s4444
       changed_when: true
 
