@@ -24,7 +24,14 @@
         $sans = @()
         foreach ($ext in $c.Extensions) {
           if ($ext.Oid.Value -eq '2.5.29.17') {
-            $sans = ($ext.Format($false) -split ',\s*') | ForEach-Object { $_.Trim() }
+            # @() is load-bearing. A pipeline yielding exactly one item
+            # returns that ITEM, not a one-element array, so a certificate
+            # with a single SAN serialised as a JSON string rather than a
+            # list, and the caller then iterated it character by character.
+            # Any cert with two or more SANs was fine, which is how it
+            # survived. (No apostrophes in this block: win_shell free-form
+            # arg splitting treats a lone one as an unbalanced quote.)
+            $sans = @(($ext.Format($false) -split ',\s*') | ForEach-Object { $_.Trim() })
           }
         }
         $bits = 0
