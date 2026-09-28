@@ -37,6 +37,29 @@ ansible-galaxy collection install mcowser_p.ssl_sleuth
   `ssl_sleuth_windows_search_paths`. Private-key directories are never
   read.
 
+## Through a proxy
+
+Set `ssl_sleuth_proxy` to route the probe through an HTTP CONNECT proxy
+(squid, a corporate egress gateway, whatever `HTTPS_PROXY` usually points
+at). Both platforms honour it: Linux via `openssl s_client -proxy`, Windows
+by issuing the CONNECT itself before handing the tunnel to `SslStream`.
+
+```yaml
+ssl_sleuth_proxy: proxy.corp.example:3128          # or http://proxy.corp.example:3128
+ssl_sleuth_proxy_username: svc-sleuth               # optional; Basic auth
+ssl_sleuth_proxy_password: "{{ vault_proxy_pass }}" # optional
+```
+
+Credentials may also be embedded (`http://user:pass@host:port`,
+percent-encoded); the explicit variables win when both are given. The
+report records the proxy as `host:port` only, never the credentials, and
+the probe task is `no_log` whenever a password is set. Only plain HTTP
+CONNECT is supported (no SOCKS, no TLS to the proxy), and the target
+host's own proxy environment variables are deliberately not consulted —
+a proxy is used only when you name one. Proxy authentication on Linux
+needs OpenSSL 3.0 or newer (`-proxy_user`); an unauthenticated proxy works
+on 1.1.x too.
+
 ## Windows and IIS
 
 Same role, same vars — the probe is native .NET `SslStream` (localhost

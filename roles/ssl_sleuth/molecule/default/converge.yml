@@ -34,7 +34,51 @@
           - ssl_sleuth_result.warnings | select('search', 'does not send the intermediate') | list | length == 1
         fail_msg: "scenario 2: {{ ssl_sleuth_result.warnings }}"
 
-    - name: Scenario 3 — conversions
+    - name: Scenario 3 — through an authenticating CONNECT proxy (URL-embedded creds)
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 4443
+        ssl_sleuth_sni: test.local
+        ssl_sleuth_proxy: http://sleuth:molecule@127.0.0.1:3128
+        ssl_sleuth_locate: false
+
+    - name: Assert scenario 3 tunnelled, clean, and credential-free in the result
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.chain | length == 2
+          - ssl_sleuth_result.warnings | length == 0
+          - ssl_sleuth_result.proxy == '127.0.0.1:3128'
+          - "'molecule' not in (ssl_sleuth_result | to_json)"
+        fail_msg: "scenario 3: {{ ssl_sleuth_result }}"
+
+    - name: Scenario 4 — wrong proxy password must fail with the 407 surfaced
+      block:
+        - name: Probe with bad credentials (explicit vars override the URL)
+          ansible.builtin.include_role:
+            name: ssl_sleuth
+          vars:
+            ssl_sleuth_host: localhost
+            ssl_sleuth_port: 4443
+            ssl_sleuth_sni: test.local
+            ssl_sleuth_proxy: http://sleuth:molecule@127.0.0.1:3128
+            ssl_sleuth_proxy_username: sleuth
+            ssl_sleuth_proxy_password: wrong
+            ssl_sleuth_locate: false
+
+        - name: Reaching here means the proxy let a bad password through
+          ansible.builtin.fail:
+            msg: "scenario 4: expected the probe to fail"
+      rescue:
+        - name: Assert the failure names the proxy and the 407
+          ansible.builtin.assert:
+            that:
+              - "'via proxy 127.0.0.1:3128' in ansible_failed_result.msg"
+              - "'407' in ansible_failed_result.msg"
+            fail_msg: "scenario 4: {{ ansible_failed_result.msg }}"
+
+    - name: Scenario 5 — conversions
       ansible.builtin.include_role:
         name: ssl_sleuth
       vars:

@@ -1,0 +1,48 @@
+---
+# Normalise ssl_sleuth_proxy{,_username,_password} into one fact the
+# platform probes consume: {host, port, username, password}. An empty host
+# means "connect directly". Validated up front so a bad proxy spec fails
+# with a sentence, not three retries of CONNECT_FAILED.
+
+- name: Parse the proxy specification
+  vars:
+    _url: >-
+      {{ (ssl_sleuth_proxy if '://' in ssl_sleuth_proxy
+          else 'http://' ~ ssl_sleuth_proxy) | urlsplit }}
+  ansible.builtin.set_fact:
+    _ssl_sleuth_proxy:
+      scheme: "{{ _url.scheme | default('') }}"
+      host: "{{ _url.hostname | default('') or '' }}"
+      port: "{{ _url.port | default(0) or 0 }}"
+      username: >-
+        {{ ssl_sleuth_proxy_username if ssl_sleuth_proxy_username | length > 0
+           else (_url.username | default('') or '') | urldecode }}
+      password: >-
+        {{ ssl_sleuth_proxy_password if ssl_sleuth_proxy_password | length > 0
+           else (_url.password | default('') or '') | urldecode }}
+  no_log: true
+  when: ssl_sleuth_proxy | length > 0
+
+- name: Default to a direct connection
+  ansible.builtin.set_fact:
+    _ssl_sleuth_proxy: {host: "", port: 0, username: "", password: "", scheme: ""}
+  when: ssl_sleuth_proxy | length == 0
+
+- name: Validate the proxy specification
+  ansible.builtin.assert:
+    that:
+      - _ssl_sleuth_proxy.scheme == 'http'
+      - _ssl_sleuth_proxy.host | length > 0
+      - _ssl_sleuth_proxy.port | int > 0
+    fail_msg: >-
+      ssl_sleuth_proxy must be an HTTP CONNECT proxy as host:port or
+      http://host:port (got '{{ ssl_sleuth_proxy }}'); the port is required
+      and only the http scheme is supported
+  when: ssl_sleuth_proxy | length > 0
+
+- name: Record the proxy (credentials excluded) in the result
+  ansible.builtin.set_fact:
+    ssl_sleuth_result: >-
+      {{ ssl_sleuth_result
+         | combine({'proxy': _ssl_sleuth_proxy.host ~ ':' ~ _ssl_sleuth_proxy.port}) }}
+  when: ssl_sleuth_proxy | length > 0

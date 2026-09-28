@@ -1,6 +1,6 @@
 ---
 # ansible-playbook -i inventory mcowser_p.ssl_sleuth.sleuth \
-#   -e host=api.example.com -e port=443
+#   -e host=api.example.com -e port=443 [-e proxy=proxy.corp.example:3128]
 - name: SSL sleuth
   hosts: all
   roles:
@@ -9,5 +9,8 @@
         ssl_sleuth_host: "{{ host | default('localhost') }}"
         ssl_sleuth_port: "{{ port | default(443) }}"
         ssl_sleuth_sni: "{{ sni | default('') }}"
+        ssl_sleuth_proxy: "{{ proxy | default('') }}"
+        ssl_sleuth_proxy_username: "{{ proxy_username | default('') }}"
+        ssl_sleuth_proxy_password: "{{ proxy_password | default('') }}"
         ssl_sleuth_iis: "{{ iis | default(false) }}"
         ssl_sleuth_expiry_warn_days: "{{ warn_days | default(14) }}"

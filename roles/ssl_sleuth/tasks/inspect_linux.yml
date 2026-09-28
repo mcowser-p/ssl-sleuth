@@ -1,6 +1,14 @@
 ---
 # Probe with openssl (universally present), emit one parseable block per
 # served certificate, and analyze the chain in Jinja.
+#
+# Proxy: s_client -proxy issues an HTTP CONNECT to the proxy and then runs
+# the handshake through the tunnel; -connect stays the real target and
+# -servername still sets SNI. Credentials go via -proxy_user and a
+# -proxy_pass env: source (OpenSSL >= 3.0) so the password never appears in
+# the process list. On failure the last openssl stderr line rides along on
+# the CONNECT_FAILED marker, because a 407 and a refused TCP connect need
+# different fixes.
 
 - name: Probe the endpoint with openssl
   ansible.builtin.shell:
@@ -10,12 +18,19 @@
       host='{{ ssl_sleuth_host }}'
       port='{{ ssl_sleuth_port }}'
       sni='{{ ssl_sleuth_sni }}'
+      proxy={{ (_ssl_sleuth_proxy.host ~ ':' ~ _ssl_sleuth_proxy.port
+                if _ssl_sleuth_proxy.host | length > 0 else '') | quote }}
+      proxy_user={{ _ssl_sleuth_proxy.username | quote }}
+      export SSL_SLEUTH_PROXY_PASS={{ _ssl_sleuth_proxy.password | quote }}
       warn_secs='{{ ssl_sleuth_expiry_warn_days | int * 86400 }}'
-      raw=$(echo | openssl s_client -connect "${host}:${port}" \
-        ${sni:+-servername "$sni"} -showcerts 2>/dev/null) || {
-          echo "CONNECT_FAILED"; exit 0; }
       tmpd=$(mktemp -d)
       trap 'rm -rf "$tmpd"' EXIT
+      raw=$(echo | openssl s_client -connect "${host}:${port}" \
+        ${sni:+-servername "$sni"} \
+        ${proxy:+-proxy "$proxy"} \
+        ${proxy_user:+-proxy_user "$proxy_user" -proxy_pass env:SSL_SLEUTH_PROXY_PASS} \
+        -showcerts 2>"$tmpd/err") || {
+          echo "CONNECT_FAILED: $(grep -v '^$' "$tmpd/err" | tail -n 1)"; exit 0; }
       echo "$raw" | awk -v d="$tmpd" '
         /-----BEGIN CERTIFICATE-----/ {n++; f=d"/c"n".pem"}
         f {print > f}
@@ -43,17 +58,23 @@
       done
   register: _ssl_sleuth_probe
   changed_when: false
+  no_log: "{{ _ssl_sleuth_proxy.password | length > 0 }}"
   retries: 3
   delay: 2
   until: "'CONNECT_FAILED' not in _ssl_sleuth_probe.stdout"
   failed_when: false
 
 - name: Fail helpfully when the endpoint is unreachable
+  vars:
+    _reason: "{{ (_ssl_sleuth_probe.stdout | regex_search('CONNECT_FAILED: *(.*)', '\\1') or ['']) | first | trim }}"
   ansible.builtin.fail:
     msg: >-
       could not establish a TLS connection to
       {{ ssl_sleuth_host }}:{{ ssl_sleuth_port }}
       {{ '(sni ' ~ ssl_sleuth_sni ~ ')' if ssl_sleuth_sni | length > 0 else '' }}
+      {{ 'via proxy ' ~ _ssl_sleuth_proxy.host ~ ':' ~ _ssl_sleuth_proxy.port
+         if _ssl_sleuth_proxy.host | length > 0 else '' }}
+      {{ '— ' ~ _reason if _reason | length > 0 else '' }}
   when: "'CONNECT_FAILED' in _ssl_sleuth_probe.stdout"
 
 - name: Reset the chain
