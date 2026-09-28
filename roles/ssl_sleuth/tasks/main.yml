@@ -3,11 +3,16 @@
   ansible.builtin.set_fact:
     ssl_sleuth_result:
       endpoint: "{{ ssl_sleuth_host }}:{{ ssl_sleuth_port }}"
+      proxy: ""
       chain: []
       warnings: []
       locations: []
       iis_bindings: []
       conversions: []
+
+- name: Resolve the proxy for the inspect probe
+  ansible.builtin.include_tasks: proxy.yml
+  when: ssl_sleuth_inspect
 
 - name: Inspect the endpoint (linux)
   ansible.builtin.include_tasks: inspect_linux.yml
@@ -53,7 +58,7 @@
 - name: Report
   ansible.builtin.debug:
     msg: |-
-      ssl-sleuth report for {{ ssl_sleuth_result.endpoint }}:
+      ssl-sleuth report for {{ ssl_sleuth_result.endpoint }}{{ ' via proxy ' ~ ssl_sleuth_result.proxy if ssl_sleuth_result.proxy | length > 0 else '' }}:
         chain: {{ ssl_sleuth_result.chain | length }} certificate(s)
       {% for c in ssl_sleuth_result.chain %}
         [{{ loop.index0 }}] {{ c.subject }}

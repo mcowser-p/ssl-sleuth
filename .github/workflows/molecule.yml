@@ -104,6 +104,13 @@ jobs:
           $binding.AddSslCertificate($cert.Thumbprint, 'My')
           "SLEUTH_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Start an authenticating CONNECT proxy for the proxy scenarios
+        shell: pwsh
+        run: |
+          Start-Process -FilePath python -ArgumentList 'roles/ssl_sleuth/molecule/default/files/connect_proxy.py', '3128', 'sleuth:molecule' -WindowStyle Hidden
+          $deadline = (Get-Date).AddSeconds(20)
+          while (-not (Test-NetConnection 127.0.0.1 -Port 3128 -InformationLevel Quiet) -and (Get-Date) -lt $deadline) { Start-Sleep 1 }
+
       - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04

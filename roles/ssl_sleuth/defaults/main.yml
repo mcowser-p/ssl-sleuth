@@ -21,6 +21,18 @@ ssl_sleuth_expiry_warn_days: 14
 # …and optionally make that (or any warning) a hard failure.
 ssl_sleuth_expiry_fail: false
 
+# --- Proxy -----------------------------------------------------------------
+# Route the inspect probe through an HTTP CONNECT proxy (the kind squid,
+# corporate egress gateways, and HTTPS_PROXY point at). "host:port" or
+# "http://host:port"; empty = connect directly. Credentials may be embedded
+# (http://user:pass@host:port, percent-encoded) or given separately below,
+# which wins and needs no encoding. SOCKS and TLS-to-the-proxy are not
+# supported: openssl s_client speaks plain CONNECT only, and the Windows
+# probe mirrors it. The proxy env vars of the target host are NOT consulted.
+ssl_sleuth_proxy: ""
+ssl_sleuth_proxy_username: ""
+ssl_sleuth_proxy_password: ""
+
 # --- Locate ----------------------------------------------------------------
 # SHA1 thumbprint to search for (no colons, any case). Empty = whatever the
 # inspect phase just collected from the endpoint.

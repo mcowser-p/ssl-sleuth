@@ -59,6 +59,14 @@
               except Exception:
                   continue
 
+    - name: Install the CONNECT proxy script
+      # files/connect_proxy.py — also started on the Windows CI runner for
+      # tests/windows/sleuth.yml, so the one script covers both platforms.
+      ansible.builtin.copy:
+        src: connect_proxy.py
+        dest: /opt/sleuth/proxy.py
+        mode: "0755"
+
     - name: Start the good server (full chain) on 4443
       ansible.builtin.shell:
         cmd: nohup python3 /opt/sleuth/server.py 4443 /opt/sleuth/fullchain.crt /opt/sleuth/leaf.key >/dev/null 2>&1 & touch /opt/sleuth/.s4443
@@ -71,12 +79,18 @@
         creates: /opt/sleuth/.s4444
       changed_when: true
 
-    - name: Wait for both servers
+    - name: Start the authenticating CONNECT proxy on 3128
+      ansible.builtin.shell:
+        cmd: nohup python3 /opt/sleuth/proxy.py 3128 sleuth:molecule >/dev/null 2>&1 & touch /opt/sleuth/.p3128
+        creates: /opt/sleuth/.p3128
+      changed_when: true
+
+    - name: Wait for both servers and the proxy
       ansible.builtin.wait_for:
         host: 127.0.0.1
         port: "{{ item }}"
         timeout: 20
-      loop: [4443, 4444]
+      loop: [4443, 4444, 3128]
 
     - name: Drop the leaf into the distro certificate directory
       ansible.builtin.copy:

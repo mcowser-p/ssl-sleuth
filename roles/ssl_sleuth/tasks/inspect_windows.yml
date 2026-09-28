@@ -1,8 +1,20 @@
 ---
 # Native .NET SslStream probe — no external tools, works for localhost.
 # Emits JSON; the same analysis fields as the linux path.
+#
+# Proxy: SslStream has no proxy notion, so the CONNECT tunnel is done by
+# hand on the raw TcpClient stream (mirroring openssl s_client -proxy on
+# linux): send the request, read the status line and headers byte by byte
+# up to the blank line, require a 2xx, then hand the same stream to
+# SslStream. Injected values are single-quoted with embedded quotes doubled
+# (the doubling lives in vars, not in the script body, because the win_shell
+# free-form splitter counts apostrophes there).
 
 - name: Probe the endpoint with SslStream
+  vars:
+    _p_host: "{{ _ssl_sleuth_proxy.host | replace(\"'\", \"''\") }}"
+    _p_user: "{{ _ssl_sleuth_proxy.username | replace(\"'\", \"''\") }}"
+    _p_pass: "{{ _ssl_sleuth_proxy.password | replace(\"'\", \"''\") }}"
   ansible.windows.win_shell: |
     $ErrorActionPreference = 'Stop'
     $targetHost = '{{ ssl_sleuth_host }}'
@@ -10,9 +22,41 @@
     $sni = '{{ ssl_sleuth_sni }}'
     if (-not $sni) { $sni = $targetHost }
     $warnDays = {{ ssl_sleuth_expiry_warn_days }}
+    $proxyHost = '{{ _p_host }}'
+    $proxyPort = {{ _ssl_sleuth_proxy.port | int }}
+    $proxyUser = '{{ _p_user }}'
+    $proxyPass = '{{ _p_pass }}'
     try {
-      $tcp = New-Object Net.Sockets.TcpClient($targetHost, $port)
-      $ssl = New-Object Net.Security.SslStream($tcp.GetStream(), $false, {$true})
+      if ($proxyHost) {
+        $tcp = New-Object Net.Sockets.TcpClient($proxyHost, $proxyPort)
+        $tcp.ReceiveTimeout = 15000
+        $stream = $tcp.GetStream()
+        $stream.ReadTimeout = 15000
+        $req = "CONNECT ${targetHost}:${port} HTTP/1.1`r`nHost: ${targetHost}:${port}`r`n"
+        if ($proxyUser) {
+          $token = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${proxyUser}:${proxyPass}"))
+          $req += "Proxy-Authorization: Basic ${token}`r`n"
+        }
+        $req += "`r`n"
+        $bytes = [Text.Encoding]::ASCII.GetBytes($req)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $resp = ''
+        $buf = New-Object byte[] 1
+        while (-not $resp.EndsWith("`r`n`r`n")) {
+          $n = $stream.Read($buf, 0, 1)
+          if ($n -le 0) { throw "proxy ${proxyHost}:${proxyPort} closed the connection during CONNECT" }
+          $resp += [char]$buf[0]
+          if ($resp.Length -gt 65536) { throw "proxy ${proxyHost}:${proxyPort} sent an oversized CONNECT response" }
+        }
+        $status = ($resp -split "`r`n")[0]
+        if ($status -notmatch '^HTTP/\d(\.\d)? 2\d\d') {
+          throw "proxy ${proxyHost}:${proxyPort} refused CONNECT to ${targetHost}:${port}: ${status}"
+        }
+      } else {
+        $tcp = New-Object Net.Sockets.TcpClient($targetHost, $port)
+        $stream = $tcp.GetStream()
+      }
+      $ssl = New-Object Net.Security.SslStream($stream, $false, {$true})
       $ssl.AuthenticateAsClient($sni)
       $leaf = New-Object Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
       $chain = New-Object Security.Cryptography.X509Certificates.X509Chain
@@ -57,6 +101,7 @@
     }
   register: _ssl_sleuth_probe_win
   changed_when: false
+  no_log: "{{ _ssl_sleuth_proxy.password | length > 0 }}"
 
 - name: Fail helpfully when the endpoint is unreachable
   vars:
@@ -64,7 +109,10 @@
   ansible.builtin.fail:
     msg: >-
       could not establish a TLS connection to
-      {{ ssl_sleuth_host }}:{{ ssl_sleuth_port }} — {{ _parsed.error | default('unknown') }}
+      {{ ssl_sleuth_host }}:{{ ssl_sleuth_port }}
+      {{ 'via proxy ' ~ _ssl_sleuth_proxy.host ~ ':' ~ _ssl_sleuth_proxy.port
+         if _ssl_sleuth_proxy.host | length > 0 else '' }}
+      — {{ _parsed.error | default('unknown') }}
   when: not (_ssl_sleuth_probe_win.stdout | from_json).ok
 
 - name: Analyze the chain

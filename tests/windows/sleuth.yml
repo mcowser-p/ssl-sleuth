@@ -20,3 +20,48 @@
           - ssl_sleuth_result.locations | length >= 1
           - ssl_sleuth_result.locations | select('search', 'Cert..LocalMachine') | list | length > 0
         fail_msg: "{{ ssl_sleuth_result | to_nice_json }}"
+
+    - name: Inspect through the authenticating CONNECT proxy started by the workflow
+      ansible.builtin.include_role:
+        name: ssl_sleuth
+      vars:
+        ssl_sleuth_host: localhost
+        ssl_sleuth_port: 443
+        ssl_sleuth_sni: sleuth.local
+        ssl_sleuth_proxy: 127.0.0.1:3128
+        ssl_sleuth_proxy_username: sleuth
+        ssl_sleuth_proxy_password: molecule
+        ssl_sleuth_locate: false
+
+    - name: Assert the tunnelled probe matches and leaks no credential
+      ansible.builtin.assert:
+        that:
+          - ssl_sleuth_result.chain | length >= 1
+          - ssl_sleuth_result.proxy == '127.0.0.1:3128'
+          - "'molecule' not in (ssl_sleuth_result | to_json)"
+        fail_msg: "{{ ssl_sleuth_result | to_nice_json }}"
+
+    - name: A wrong proxy password must fail with the 407 surfaced
+      block:
+        - name: Probe with bad credentials
+          ansible.builtin.include_role:
+            name: ssl_sleuth
+          vars:
+            ssl_sleuth_host: localhost
+            ssl_sleuth_port: 443
+            ssl_sleuth_sni: sleuth.local
+            ssl_sleuth_proxy: 127.0.0.1:3128
+            ssl_sleuth_proxy_username: sleuth
+            ssl_sleuth_proxy_password: wrong
+            ssl_sleuth_locate: false
+
+        - name: Reaching here means the proxy let a bad password through
+          ansible.builtin.fail:
+            msg: expected the probe to fail
+      rescue:
+        - name: Assert the failure names the proxy and the 407
+          ansible.builtin.assert:
+            that:
+              - "'via proxy 127.0.0.1:3128' in ansible_failed_result.msg"
+              - "'407' in ansible_failed_result.msg"
+            fail_msg: "{{ ansible_failed_result.msg }}"
